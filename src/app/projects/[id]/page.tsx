@@ -452,11 +452,77 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
       });
       
       if (response.ok) {
-        fetchProject();
+        fetchProject(true);
       }
     } catch (error) {
       console.error('Error copying secret:', error);
     }
+  };
+
+  // Helper function to copy all missing fields from an environment
+  const copyAllMissingFromEnvironment = async (sourceEnvId: string) => {
+    if (!project || !activeConfig || !projectId) return;
+    
+    const sourceEnv = project.environments.find(env => env.id === sourceEnvId);
+    if (!sourceEnv) return;
+    
+    const missingKeys = getMissingKeys();
+    let copiedCount = 0;
+    
+    try {
+      for (const key of missingKeys) {
+        // Find the secret value in the source environment
+        let secretValue = '';
+        for (const config of sourceEnv.secretConfigs) {
+          const secret = config.secrets.find(s => s.key === key);
+          if (secret && secret.value.trim() !== '') {
+            secretValue = secret.value;
+            break;
+          }
+        }
+        
+        if (secretValue) {
+          const response = await fetch(`/api/projects/${projectId}/secrets`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              key,
+              value: secretValue,
+              type: 'text',
+              secretConfigId: activeConfig,
+            }),
+          });
+          
+          if (response.ok) {
+            copiedCount++;
+          }
+        }
+      }
+      
+      if (copiedCount > 0) {
+        fetchProject(true);
+        alert(`Successfully copied ${copiedCount} missing field(s) from ${sourceEnv.displayName}`);
+      } else {
+        alert(`No fields could be copied from ${sourceEnv.displayName}`);
+      }
+    } catch (error) {
+      console.error('Error copying all missing fields:', error);
+      alert('Error occurred while copying fields');
+    }
+  };
+
+  // Helper function to get environments that have ANY of the missing keys
+  const getEnvironmentsWithAnyMissingKey = (): Environment[] => {
+    if (!project) return [];
+    
+    const missingKeys = getMissingKeys();
+    return project.environments.filter(env => {
+      return env.secretConfigs.some(config => {
+        return config.secrets.some(secret => 
+          missingKeys.includes(secret.key) && secret.value.trim() !== ''
+        );
+      });
+    });
   };
 
   const fetchAuditLogs = async () => {
@@ -1350,14 +1416,10 @@ https://your-domain.com/api/v1/secrets`}
                           </div>
                         ) : (
                           <>
-                            {!currentSecretConfig.secrets || currentSecretConfig.secrets.length === 0 ? (
-                              <div className="text-center py-8 text-gray-500">
-                                <Settings className="h-8 w-8 mx-auto mb-2" />
-                                <p>No secrets yet. Add your first secret to get started.</p>
-                              </div>
-                            ) : (
-                              <div className="space-y-2">
-                                {currentSecretConfig.secrets.map((secret) => (
+                            <div className="space-y-2">
+                              {/* Existing secrets */}
+                              {currentSecretConfig.secrets && currentSecretConfig.secrets.length > 0 ? (
+                                currentSecretConfig.secrets.map((secret) => (
                                   <div
                                     key={secret.id}
                                     className="flex items-center gap-3 p-2 border rounded-lg"
@@ -1407,66 +1469,97 @@ https://your-domain.com/api/v1/secrets`}
                                       </Button>
                                     </div>
                                   </div>
-                                ))}
-                                
-                                {/* Missing fields section */}
-                                {getMissingKeys().length > 0 && (
-                                  <div className="space-y-2 mt-4 pt-4 border-t">
+                                ))
+                              ) : (
+                                <div className="text-center py-8 text-gray-500">
+                                  <Settings className="h-8 w-8 mx-auto mb-2" />
+                                  <p>No secrets yet. Add your first secret to get started.</p>
+                                </div>
+                              )}
+                              
+                              {/* Missing fields section - always show if there are missing keys */}
+                              {getMissingKeys().length > 0 && (
+                                <div className="space-y-2 mt-4 pt-4 border-t">
+                                  <div className="flex items-center justify-between">
                                     <div className="flex items-center gap-2 text-sm font-medium text-amber-700">
                                       <AlertTriangle className="h-4 w-4" />
                                       Missing Fields ({getMissingKeys().length})
                                     </div>
-                                    {getMissingKeys().map((key) => {
-                                      const envsWithKey = getEnvironmentsWithKey(key);
-                                      return (
-                                        <div
-                                          key={key}
-                                          className="flex items-center gap-3 p-2 border border-red-200 bg-red-50 rounded-lg"
-                                        >
-                                          <div className="flex items-center gap-2 min-w-0 w-40 flex-shrink-0">
-                                            <span className="text-sm font-medium truncate text-red-700">{key}</span>
-                                            <Badge variant="destructive" className="text-xs h-4 px-1.5 flex-shrink-0">
-                                              missing
-                                            </Badge>
-                                          </div>
-                                          <div className="flex-1 min-w-0">
-                                            <code className="block w-full text-sm bg-red-100 px-2 py-1 rounded font-mono text-red-600">
-                                              (empty)
-                                            </code>
-                                          </div>
-                                          <div className="flex items-center gap-1 flex-shrink-0">
-                                            {envsWithKey.length > 0 && (
-                                              <DropdownMenu>
-                                                <DropdownMenuTrigger asChild>
-                                                  <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    className="h-7 px-2 text-xs bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100"
-                                                  >
-                                                    <Copy className="h-3 w-3 mr-1" />
-                                                    Copy from
-                                                  </Button>
-                                                </DropdownMenuTrigger>
-                                                <DropdownMenuContent>
-                                                  {envsWithKey.map((env) => (
-                                                    <DropdownMenuItem
-                                                      key={env.id}
-                                                      onClick={() => copyFromEnvironment(key, env.id)}
-                                                    >
-                                                      <span className="font-medium">{env.displayName}</span>
-                                                    </DropdownMenuItem>
-                                                  ))}
-                                                </DropdownMenuContent>
-                                              </DropdownMenu>
-                                            )}
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
+                                    {getEnvironmentsWithAnyMissingKey().length > 0 && (
+                                      <DropdownMenu>
+                                        <DropdownMenuTrigger asChild>
+                                          <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-7 px-2 text-xs bg-green-50 border-green-200 text-green-700 hover:bg-green-100"
+                                          >
+                                            <Copy className="h-3 w-3 mr-1" />
+                                            Copy all from
+                                          </Button>
+                                        </DropdownMenuTrigger>
+                                        <DropdownMenuContent>
+                                          {getEnvironmentsWithAnyMissingKey().map((env) => (
+                                            <DropdownMenuItem
+                                              key={env.id}
+                                              onClick={() => copyAllMissingFromEnvironment(env.id)}
+                                            >
+                                              <span className="font-medium">{env.displayName}</span>
+                                            </DropdownMenuItem>
+                                          ))}
+                                        </DropdownMenuContent>
+                                      </DropdownMenu>
+                                    )}
                                   </div>
-                                )}
-                              </div>
-                            )}
+                                  {getMissingKeys().map((key) => {
+                                    const envsWithKey = getEnvironmentsWithKey(key);
+                                    return (
+                                      <div
+                                        key={key}
+                                        className="flex items-center gap-3 p-2 border border-red-200 bg-red-50 rounded-lg"
+                                      >
+                                        <div className="flex items-center gap-2 min-w-0 w-40 flex-shrink-0">
+                                          <span className="text-sm font-medium truncate text-red-700">{key}</span>
+                                          <Badge variant="destructive" className="text-xs h-4 px-1.5 flex-shrink-0">
+                                            missing
+                                          </Badge>
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                          <code className="block w-full text-sm bg-red-100 px-2 py-1 rounded font-mono text-red-600">
+                                            (empty)
+                                          </code>
+                                        </div>
+                                        <div className="flex items-center gap-1 flex-shrink-0">
+                                          {envsWithKey.length > 0 && (
+                                            <DropdownMenu>
+                                              <DropdownMenuTrigger asChild>
+                                                <Button
+                                                  variant="outline"
+                                                  size="sm"
+                                                  className="h-7 px-2 text-xs bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100"
+                                                >
+                                                  <Copy className="h-3 w-3 mr-1" />
+                                                  Copy from
+                                                </Button>
+                                              </DropdownMenuTrigger>
+                                              <DropdownMenuContent>
+                                                {envsWithKey.map((env) => (
+                                                  <DropdownMenuItem
+                                                    key={env.id}
+                                                    onClick={() => copyFromEnvironment(key, env.id)}
+                                                  >
+                                                    <span className="font-medium">{env.displayName}</span>
+                                                  </DropdownMenuItem>
+                                                ))}
+                                              </DropdownMenuContent>
+                                            </DropdownMenu>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
                           </>
                         )}
                       </CardContent>
